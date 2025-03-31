@@ -1,0 +1,663 @@
+#####HTP class project ########
+getwd()
+setwd("C:/Users/thadaraj/OneDrive - Michigan State University/Desktop/HTP_spring2025class/Genomic prediction project//") 
+
+####################################################
+###Step 1.load genotype data and Look into the population structure #################
+geno <- read.table("sweetcap_impute_600ind_MAF025.num.txt", sep = "\t", header = TRUE)
+dim(geno)
+sum(is.na(geno))
+
+##impute using library impute #######
+library(impute) # Install if necessary: install.packages("impute")
+geno_impute <- impute::impute.knn(as.matrix(geno))$data
+dim(geno_impute)
+sum(is.na(geno_impute))
+saveRDS(geno_impute, "Imputedgeno.rds")
+
+
+M_imputed= readRDS("Imputedgeno.rds")
+dim(M_imputed)
+#####A. GRM ################
+M_grm=t(as.matrix(M_imputed -1))# recode matrix as -1,0,1
+dim(M_grm)
+getG=function(M) 
+{
+  p=colMeans(M)/2 #allee frequecny
+  Z=M-2*p #genotype-2*allele fequency
+  d=2*sum(p*(1-p)) # genotypic variance 2pq
+  G=crossprod(Z)/d #genotype *genotype/ variance
+  return(G)   
+}
+G=getG(M_grm) 
+
+G[1:10,1:10]
+G[1,] #showing relationship between 
+saveRDS(G, "GRM_matrix.rds") 
+
+colnames(G)=rownames(M_imputed)
+rownames(G)=rownames(M_imputed)
+pop=as.factor(rownames(M_imputed))
+cols=c("black","blue","red")
+
+pdf("heatmap1.pdf")
+heatmap(G,symm=T,col=grey.colors(16,start=0,end=1),
+        RowSideColors=cols[as.numeric(pop)],
+        ColSideColors=cols[as.numeric(pop)])
+#legend("topleft",levels(pop),fil=cols[1:length(levels(pop))],cex=1)
+dev.off()
+
+###### B. Principal component analysis (PCA) ##########
+library(dplyr)
+pca_input <-  as.matrix(geno_impute)
+# Perform Principal Component Analysis (PCA)
+pca_result <- prcomp(pca_input, scale. = TRUE)
+# Create a dataframe with PCA scores and genotype labels
+pca_df <- as.data.frame(pca_result$x) 
+# Calculate variance explained
+variance <- pca_result$sdev^2  # Variance = square of standard deviation
+var_explained <- round(variance / sum(variance) * 100, 1) 
+# PCA plot showing PC1 vs. PC2
+library(ggplot2)
+library(ggrepel)
+
+pdf("pcafromsbw.pdf")
+ggplot(pca_df, aes(x = PC1, y = PC2)) + 
+  geom_point(size = 1) + 
+  labs(
+    title = "PCA Genomic Data",
+    x = paste0("PC1 (", var_explained[1], "%)"),  # Add % to x-axis
+    y = paste0("PC2 (", var_explained[2], "%)")   # Add % to y-axis
+  ) +
+  theme_minimal()
+
+dev.off()    
+
+
+
+############ C. Genetic Distance #################
+#Calculate Allele Sharing: 
+library(ape)
+allshare=matrix(NA,nrow(geno_impute),nrow(geno_impute)) 
+dim(allshare)
+#allshare is a matrix where each element [i, j] represents the mean absolute difference in alleles between individuals i and j
+for(i in 1:nrow(geno_impute))
+{
+  hold = abs(geno_impute - geno_impute[,i]) #store difference between itself to everybody else
+  allshare[,i] = rowMeans(hold,na.rm=T) #means across snps
+}
+rownames(allshare)=rownames(geno_impute)
+colnames(allshare)=rownames(geno_impute)
+pop=as.factor(rownames(geno_impute))
+allshare[1:10,1:10]
+allshare[1,]
+dim(allshare)
+
+#Hierarchical Clustering:
+cols=c("black","blue","red")
+cols1= rainbow(length(unique(pop)))
+tree=as.phylo(hclust(as.dist(allshare), 
+                     method="ward.D2")) #short out the based on the cluster #minimize withim them and maximize the distance between inbetween them
+tree$edge
+tree$tip.label
+# methods are wardD2, median, centroid
+plot(tree,type="c",edge.color="gray",direction="r",cex=0.7,adj=0,tip.color=cols[as.numeric(pop)])
+legend("topleft",
+       levels(pop),
+       fil=cols,
+       cex=0.8) #treee si really depends which clustring method you used
+
+
+pdf("treesweetCAP.pdf")
+plot(tree,type="f",
+     edge.color=cols1,
+     direction="r",
+     cex=0.1,
+     adj=0,
+     tip.color=cols[as.numeric(pop)],
+     no.margin = T)
+dev.off()
+
+
+
+
+
+#### Step 2 :load phenotype data
+library(readxl)
+pheno= read_excel("1.SweetCAP_2022_Flowering_relatedTraits_and_ExpDesign.xlsx")
+dim(pheno)
+pheno[pheno == "NA"] <- NA
+
+#remove na from Y
+sum(is.na(pheno$`Days to Pollen`))
+pheno <- pheno[!is.na(pheno$`Days to Pollen`), ]
+dim(pheno)
+#if you want to change name of the column
+#colnames(pheno)[1]<-"geno"
+
+
+
+#change to the factor######
+pheno$Maternal_Genotype <-as.factor(pheno$Maternal_Genotype)
+pheno$`Days to Pollen`=as.numeric(pheno$`Days to Pollen`)
+pheno$Rep=as.factor(pheno$Rep)
+pheno$Block=as.factor(pheno$Block)
+pheno$Row=as.factor(pheno$Row)
+
+
+
+#y visulization#######
+pdf("histDSI 1.pdf")
+hist(pheno$`Days to Pollen`, col="blue",xlab="Days to Pollination",ylab="Frequency",
+     border="white",breaks=10,main="DPHistogram") 
+dev.off()
+mean(pheno$`Days to Pollen`, na.rm = TRUE) #60.28
+
+#####################################################
+#split the field using rep # LSD or rowcol desing 
+#heatmap using ggplot
+library(dplyr)
+library(ggplot2)
+splitbyrep=split.data.frame(pheno, pheno$Rep)
+rep1=as.data.frame(splitbyrep$`1`)
+rep1$Maternal_Genotype <-as.factor(rep1$Maternal_Genotype)
+rep1$`Days to Pollen`=as.numeric(rep1$`Days to Pollen`)
+rep1$Rep=as.factor(rep1$Rep)
+rep1$Block=as.factor(rep1$Block)
+rep1$Row=as.factor(rep1$Row)
+
+
+
+#fill with ID
+pdf("heatmap.pdf" ,width = 15, height = 8)
+rep1 %>%
+  ggplot(aes(x = Row , y = Block, label = Maternal_Genotype, fill = `Days to Pollen`)) +
+  geom_tile(color = "grey") +
+  scale_fill_continuous(
+    low = "white",
+    high = "darkgreen",
+    name = "Daystoflowing_rating") +
+  #geom_text(color = "black", size = 2) +
+  #scale_y_discrete(limits = rev)+
+  scale_x_discrete(position = "bottom")
+dev.off()
+
+
+
+
+#################Step 3 matching genotype and phenotype name###############
+
+#######matching phenotype and genotype name and create subset of the pheno and geno######
+length(intersect(rownames(M_imputed), pheno$Maternal_Genotype))
+setdiff(rownames(M_imputed), pheno$Maternal_Genotype) 
+
+# Identify matching genotype and phenotype samples
+common_samples <- intersect(rownames(M_imputed), pheno$Maternal_Genotype)
+length(common_samples)
+# Subset phenotype to matching samples
+phenosubset <- pheno[pheno$Maternal_Genotype %in% common_samples, ]
+dim(phenosubset)
+
+
+
+
+
+
+
+
+
+
+# Ensure genotype is ordered correctly and subset genotype
+genosubset <- M_imputed[common_samples,]
+dim(genosubset)
+saveRDS(genosubset,"genotypecommonwithpheno.rds")
+
+
+
+#################################step 4 Genomic prediction #################################
+
+
+#########################################################
+#####Genomic prediction using RRBLUP#################
+################################################
+
+###Install packages and load the package
+library(rrBLUP)
+library(dplyr)
+library(tibble)
+library(RColorBrewer)
+library(ggpubr)
+library(ggplot2)
+library(tidyverse)
+library(stringr)
+library(qqman)
+library(vcfR)
+library(tibble)
+
+
+######RRBLUPwith 10 fold cross validation ##############################
+########################################################################
+#pheno$BLUE <- as.numeric(as.character(pheno$BLUE))
+#mean(phenosubset$BLUE)
+#convert marker to -1,0 and 1 format###
+genosubsetrrblup=genosubset
+genosubsetrrblup[genosubset == 1] <- 1
+genosubsetrrblup[genosubset == 0] <- -1
+genosubsetrrblup[genosubset == 0.5] <- 0
+
+dim(genosubsetrrblup)
+#632 35437
+
+
+trait=1
+cycles=10
+accuracy2= matrix(nrow = cycles, ncol=10) # empty matrix to store results
+set.seed(12345)
+for(s in 1:10){
+  for(r in 1:cycles){
+    train<-as.matrix(sample(1:629, 442)) 
+    test<- setdiff(1:632, train) 
+    Pheno_train<-phenosubset[train,] 
+    Pheno_test<-phenosubset[test,] 
+    marker_train<-genosubsetrrblup[train,] 
+    marker_test<-genosubsetrrblup[test,]
+    Indx_train<-Pheno_train$`Days to Pollen`
+    Indx_test<-Pheno_test$`Days to Pollen`
+    
+    # rrBLUP package (Hendelman)
+    finalmodel = mixed.solve(Indx_train,
+                             Z=marker_train, 
+                             K=NULL,
+                             SE= F,
+                             return.Hinv = F)
+    ME<-finalmodel$u
+    ME_matrix<-as.matrix(ME) #marker effect matrix
+    predi_index<-marker_test %*% ME_matrix ## marker testing * marker effect 
+    Predicted_value_test<- predi_index + 60.28
+    accuracy2[r,s]<-cor(Predicted_value_test, Indx_test, use = "complete")
+  }}
+mean(accuracy2)
+
+
+
+
+
+print(dim(marker_train)) # Dimensions of marker_train (should be 442 × number of markers)
+print(length(Indx_train)) # Length of Indx_train (should be 442)
+dim(Pheno_train)
+
+Maccuracy2<-apply(accuracy2,2,mean) # mean accuracy of cycles
+mean(Maccuracy2)
+dim(accuracy2)
+
+################ Scatter plot#############
+accuracy2 <- data.frame("rrblup70:30"=c(t(accuracy2[1:90]))) 
+INDEX_DF<- data.frame(Predicted_value_test, Indx_test) # create the data frame input for GP plot
+plotindex <- ggplot(INDEX_DF, aes(x=Predicted_value_test, y=Indx_test)) + geom_point() +
+  geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) 
+plotindex
+#####################dataframe#############
+colnames(accuracy2) <- "rrblup70:30"
+accuracyrrbulp7030 <- as.data.frame(accuracy2)
+write.csv(accuracyrrbulp7030, "RRBLUP_70:30.csv")
+
+
+##################################################
+###########RRBLUP 80:20####################################
+trait=1
+cycles=10
+accuracy2= matrix(nrow = cycles, ncol=10) # empty matrix to store results
+set.seed(12345)
+for(s in 1:10){
+  for(r in 1:cycles){
+    train<-as.matrix(sample(1:727, 582)) 
+    test<- setdiff(1:727, train) 
+    Pheno_train<-phenosubset[train,] 
+    Pheno_test<-phenosubset[test,] 
+    marker_train<-genofinal[train,] 
+    marker_test<-genofinal[test,]
+    Indx_train<-Pheno_train[,2] 
+    Indx_test<-Pheno_test[,2]
+    
+    # rrBLUP package (Hendelman)
+    finalmodel = mixed.solve(Indx_train,
+                             Z=marker_train, 
+                             K=NULL,
+                             SE= F,
+                             return.Hinv = F)
+    ME<-finalmodel$u
+    ME_matrix<-as.matrix(ME) #marker effect matrix
+    predi_index<-marker_test %*% ME_matrix ## marker testing * marker effect 
+    Predicted_value_test<- predi_index + 30.53
+    accuracy2[r,s]<-cor(Predicted_value_test, Indx_test, use = "complete")
+  }}
+mean(accuracy2) #0.6794 accuracy
+
+Maccuracy2<-apply(accuracy2,2,mean) # mean accuracy of cycles
+mean(Maccuracy2)
+dim(accuracy2)
+
+################ Scatter plot#############
+accuracy2 <- data.frame("rrblup80:20"=c(t(accuracy2[1:90]))) 
+INDEX_DF<- data.frame(Predicted_value_test, Indx_test) # create the data frame input for GP plot
+plotindex <- ggplot(INDEX_DF, aes(x=Predicted_value_test, y=Indx_test)) + geom_point() +
+  geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) 
+plotindex
+#####################dataframe#############
+colnames(accuracy2) <- "rrblup80:20"
+accuracyrrbulp8020 <- as.data.frame(accuracy2)
+write.csv(accuracyrrbulp8020, "RRBLUP_80:20yearwise.csv")
+
+
+
+##################################################
+###########RRBLUP 90:10####################################
+trait=1
+cycles=10
+accuracy2= matrix(nrow = cycles, ncol=10) # empty matrix to store results
+set.seed(12345)
+for(s in 1:10){
+  for(r in 1:cycles){
+    train<-as.matrix(sample(1:727, 654)) 
+    test<- setdiff(1:727, train) 
+    Pheno_train<-phenosubset[train,] 
+    Pheno_test<-phenosubset[test,] 
+    marker_train<-genofinal[train,] 
+    marker_test<-genofinal[test,]
+    Indx_train<-Pheno_train[,2] 
+    Indx_test<-Pheno_test[,2]
+    
+    # rrBLUP package (Hendelman)
+    finalmodel = mixed.solve(Indx_train,
+                             Z=marker_train, 
+                             K=NULL,
+                             SE= F,
+                             return.Hinv = F)
+    ME<-finalmodel$u
+    ME_matrix<-as.matrix(ME) #marker effect matrix
+    predi_index<-marker_test %*% ME_matrix ## marker testing * marker effect 
+    Predicted_value_test<- predi_index + 30.53
+    accuracy2[r,s]<-cor(Predicted_value_test, Indx_test, use = "complete")
+  }}
+mean(accuracy2) #0.6657 accuracy
+
+Maccuracy2<-apply(accuracy2,2,mean) # mean accuracy of cycles
+mean(Maccuracy2)
+dim(accuracy2)
+
+################ Scatter plot#############
+accuracy2 <- data.frame("rrblup90:10"=c(t(accuracy2[1:90]))) 
+INDEX_DF<- data.frame(Predicted_value_test, Indx_test) # create the data frame input for GP plot
+plotindex <- ggplot(INDEX_DF, aes(x=Predicted_value_test, y=Indx_test)) + geom_point() +
+  geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) 
+plotindex
+#####################dataframe#############
+colnames(accuracy2) <- "rrblup90:10"
+accuracyrrbulp9010 <- as.data.frame(accuracy2)
+write.csv(accuracyrrbulp9010, "RRBLUP_90:10yearwise.csv")
+
+
+
+#####Create the df to compare different training and testing size######
+library(dplyr)
+comparison_df <-cbind(accuracyrrbulp7030, accuracyrrbulp8020, accuracyrrbulp9010)
+write.csv(comparison_df,"yearwisetraintestpop.csv")
+######converted in excel in the table form##
+tableform<-read.csv("yearwisetraintestpop_tablefrom.csv")
+######lets, make the plot###
+library(plotly)
+# install.packages("IRdisplay")
+library(IRdisplay)
+pdf("trainingtestingratio.pdf")
+tableform%>%ggplot(aes(x=Training.testing.ratio, y=Accuracy,
+                       fill=Training.testing.ratio))+
+  geom_violin(width=1, alpha=0.7)+
+  geom_boxplot(width=0.25,color="black",alpha=0.2)+
+  geom_jitter(color="black", width=0.25, shape=21,size=0.3)+
+  scale_fill_manual(values = red)
+dev.off()               
+
+
+
+
+
+#############80:20 training and testing is finalized##########
+######GBLUP 80:20#############################################
+###Install packages and load the package
+library(rrBLUP)
+library(dplyr)
+library(tibble)
+library(RColorBrewer)
+library(ggpubr)
+library(ggplot2)
+library(tidyverse)
+library(stringr)
+library(qqman)
+library(vcfR)
+library(tibble)
+###we need to transpose the the marker matrix for gblup
+genogblup<-t(genofinal)
+dim(genogblup)
+commmonname2<-intersect(rownames(genogblup),phenogblup$ID)
+length(commmonname2)
+
+trait=1
+cycles=10
+accuracy2= matrix(nrow = cycles, ncol=10) # empty matrix to store results
+set.seed(12345)
+for(s in 1:10){
+  for(r in 1:cycles){
+    train<-as.matrix(sample(1:727, 582)) 
+    test<- setdiff(1:727, train) 
+    Pheno_train<-phenosubset[train,] 
+    Pheno_test<-phenosubset[test,] 
+    marker_train<-genofinal[train,] 
+    marker_test<-genofinal[test,]
+    Indx_train<-Pheno_train[,2] 
+    Indx_test<-Pheno_test[,2]  #extract markers for training pop
+    
+    yNA = phenogblup
+    yNA$BLUE[test] <- NA
+    yNA <- as.data.frame(yNA)
+    
+    # GBLUP
+    Gm<-A.mat(X = genogblup, min.MAF = 0.05) #Kinship Matrix creation using marker matrix
+    gblupModel <- kin.blup(data=yNA, geno='ID', pheno='BLUE', K=Gm)
+    yHat0 = gblupModel$pred[test]  # Predicted value (R)
+    accuracy2[r,s] = cor(yHat0, Pheno_test$BLUE, use = "complete" ) # store the correlation of each cycle
+  }}
+
+Maccuracy2<-apply(accuracy2,2,mean) # mean accuracy of cycles
+mean(Maccuracy2)#0.77
+dim(accuracy2)
+################ Scatter plot#############
+accuracy2 <- data.frame("Entire_Population_GBLUP"=c(t(accuracy2[1:90]))) # combine into one column for graphs
+predGS0 <- data.frame(Pheno_test$BLUE, yHat0) # create the data frame input for GP plot
+p_GS0 <- ggplot(predGS0, aes(x=yHat0, y=Pheno_test$index)) + geom_point() +
+  geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) 
+p_GS0
+
+colnames(accuracy2) <- "Entire Population GBLUP"
+accuracy2 <- as.data.frame(accuracy2)
+A_Plot <- ggplot(accuracy2, aes(x="", y=`Entire Population GBLUP`)) +
+  geom_boxplot()
+
+A_Plot + 
+  ggtitle("Accuracy Entire Population") #plot
+#####################dataframe#############
+colnames(accuracy2) <- "Entire Population GBLUP"
+accuracy2 <- as.data.frame(accuracy2)
+write.csv(accuracy2, "GBLUP_blup_yearwise80:20.csv")
+
+###########################################################
+##baysian model################
+#BAYS A
+###########################################################
+library(BGLR)
+library(RColorBrewer)
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(dplyr)
+trait=1
+cycles=10
+accuracy2= matrix(nrow = cycles, ncol=10) # empty matrix to store results
+set.seed(12345)
+for(s in 1:10){
+  for(r in 1:cycles){
+    train<-as.matrix(sample(1:727, 654)) 
+    test<- setdiff(1:727, train) 
+    Pheno_train<-phenosubset[train,] 
+    Pheno_test<-phenosubset[test,] 
+    marker_train<-genofinal[train,] 
+    marker_test<-genofinal[test,]
+    Indx_train<-Pheno_train[,2] 
+    Indx_test<-Pheno_test[,2]
+    
+    # Model training, calculating SNP effect: b.
+    ETA<-list(list(X=marker_train, model='BayesA'))  
+    fm<-BGLR(y=Indx_train,ETA=ETA, nIter=1000, burnIn=500) 
+    indx = fm$ETA[[1]]$b
+    e = as.matrix(indx)
+    pred_indx_test<-marker_test %*% e 
+    accuracy2[r,s]<-cor(pred_indx_test, Indx_test, use = "complete")
+  }}
+
+
+Maccuracy2<-apply(accuracy2,2,mean) # mean accuracy of cycles
+mean(Maccuracy2)#0.66
+dim(accuracy2)
+
+################ Scatter plot#############
+accuracy2 <- data.frame("Entire_Population_GBLUP"=c(t(accuracy2[1:90]))) 
+INDEX_DF<- data.frame(pred_indx_test, Indx_test) # create the data frame input for GP plot
+plotindex <- ggplot(INDEX_DF, aes(x=pred_indx_test, y=Indx_test)) + geom_point() +
+  geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) 
+plotindex
+#####################dataframe#############
+colnames(accuracy2) <- "Entire Population GBLUP"
+accuracy2 <- as.data.frame(accuracy2)
+write.csv(accuracy2, "BaysA_Pheno_index.csv")
+#################################################
+
+
+###########################################################
+##baysian model################
+##BaysB
+###########################################################
+library(BGLR)
+library(RColorBrewer)
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(dplyr)
+trait=1
+cycles=10
+accuracy2= matrix(nrow = cycles, ncol=10) # empty matrix to store results
+set.seed(12345)
+for(s in 1:10){
+  for(r in 1:cycles){
+    train<-as.matrix(sample(1:727, 654)) 
+    test<- setdiff(1:727, train) 
+    Pheno_train<-phenosubset[train,] 
+    Pheno_test<-phenosubset[test,] 
+    marker_train<-genofinal[train,] 
+    marker_test<-genofinal[test,]
+    Indx_train<-Pheno_train[,2] 
+    Indx_test<-Pheno_test[,2]
+    
+    # Model training, calculating SNP effect: b.
+    ETA<-list(list(X=marker_train, model='BayesB'))  
+    fm<-BGLR(y=Indx_train,ETA=ETA, nIter=1000, burnIn=500) 
+    indx = fm$ETA[[1]]$b
+    e = as.matrix(indx)
+    pred_indx_test<-marker_test %*% e 
+    accuracy2[r,s]<-cor(pred_indx_test, Indx_test, use = "complete")
+  }}
+
+
+Maccuracy2<-apply(accuracy2,2,mean) # mean accuracy of cycles
+mean(Maccuracy2)#0.66
+dim(accuracy2)
+
+################ Scatter plot#############
+accuracy2 <- data.frame("Entire_Population_GBLUP"=c(t(accuracy2[1:90]))) 
+INDEX_DF<- data.frame(pred_indx_test, Indx_test) # create the data frame input for GP plot
+plotindex <- ggplot(INDEX_DF, aes(x=pred_indx_test, y=Indx_test)) + geom_point() +
+  geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) 
+plotindex
+#####################dataframe#############
+colnames(accuracy2) <- "Entire Population GBLUP"
+accuracy2 <- as.data.frame(accuracy2)
+write.csv(accuracy2, "BaysB_Pheno_index.csv")
+
+
+###########################################################
+##baysian model################
+##BaysC
+###########################################################
+library(BGLR)
+library(RColorBrewer)
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(dplyr)
+trait=1
+cycles=10
+accuracy2= matrix(nrow = cycles, ncol=10) # empty matrix to store results
+set.seed(12345)
+for(s in 1:10){
+  for(r in 1:cycles){
+    train<-as.matrix(sample(1:727, 654)) 
+    test<- setdiff(1:727, train) 
+    Pheno_train<-phenosubset[train,] 
+    Pheno_test<-phenosubset[test,] 
+    marker_train<-genofinal[train,] 
+    marker_test<-genofinal[test,]
+    Indx_train<-Pheno_train[,2] 
+    Indx_test<-Pheno_test[,2]
+    
+    # Model training, calculating SNP effect: b.
+    ETA<-list(list(X=marker_train, model='BayesC'))  
+    fm<-BGLR(y=Indx_train,ETA=ETA, nIter=1000, burnIn=500) 
+    indx = fm$ETA[[1]]$b
+    e = as.matrix(indx)
+    pred_indx_test<-marker_test %*% e 
+    accuracy2[r,s]<-cor(pred_indx_test, Indx_test, use = "complete")
+  }}
+
+
+Maccuracy2<-apply(accuracy2,2,mean) # mean accuracy of cycles
+mean(Maccuracy2)#0.66
+dim(accuracy2)
+
+################ Scatter plot#############
+accuracy2 <- data.frame("Entire_Population_GBLUP"=c(t(accuracy2[1:90]))) 
+INDEX_DF<- data.frame(pred_indx_test, Indx_test) # create the data frame input for GP plot
+plotindex <- ggplot(INDEX_DF, aes(x=pred_indx_test, y=Indx_test)) + geom_point() +
+  geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) 
+plotindex
+#####################dataframe#############
+colnames(accuracy2) <- "Entire Population GBLUP"
+accuracy2 <- as.data.frame(accuracy2)
+write.csv(accuracy2, "BaysC_Pheno_index.csv")
+
+
+
+
+dev.off()
+###########Comparision of various model#########
+modcomp<-fread("modelcomparision.txt", header = T, sep = "\t")
+pdf("modelcmp.pdf")
+ggplot(data = modcomp, 
+       aes(x=Model, y=Accuracy, fill=Model))+
+  geom_boxplot(show.legend = FALSE, outlier.shape = NA, alpha=0.1, width=0.6)+
+  geom_jitter(show.legend = FALSE, width = 0.15, shape=21, color="black")
+dev.off()
+
+
+
+
+
+
+
